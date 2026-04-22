@@ -115,6 +115,91 @@ void getEncoderValues() {
     motorVel[1] = feedback.Vel_Estimate;
   }
 }
+float motorTurnsToActuatorDeg(int nodeID, float motorTurns) {
+  return reduction[nodeID] == 0.0f ? 0.0f
+                                   : (motorTurns * 360.0f) / reduction[nodeID];
+}
+float motorTurnsPerSecToActuatorDegPerSec(int nodeID, float motorTurnsPerSec) {
+  return reduction[nodeID] == 0.0f ? 0.0f
+                                   : (motorTurnsPerSec * 360.0f) /
+                                         reduction[nodeID];
+}
+void beginJumpAngleLog(int rep) {
+  jumpLogActive = true;
+  jumpLogRep = rep;
+  jumpLogCount = 0;
+  jumpLogOverflowed = false;
+  jumpLogStartMs = millis();
+  lastJumpLogMs = 0;
+}
+void sampleJumpAngleLog() {
+  if (!jumpLogActive) {
+    return;
+  }
+
+  uint32_t now = millis();
+  if (jumpLogCount > 0 && now - lastJumpLogMs < JUMP_LOG_INTERVAL_MS) {
+    return;
+  }
+
+  if (jumpLogCount >= JUMP_LOG_CAPACITY) {
+    jumpLogOverflowed = true;
+    return;
+  }
+
+  JumpAngleSample &sample = jumpLog[jumpLogCount++];
+  sample.t_ms = now - jumpLogStartMs;
+  sample.rep = jumpLogRep;
+  sample.motor0_deg = motorTurnsToActuatorDeg(0, motorPos[0]);
+  sample.motor1_deg = motorTurnsToActuatorDeg(1, motorPos[1]);
+  sample.motor0_vel_dps = motorTurnsPerSecToActuatorDegPerSec(0, motorVel[0]);
+  sample.motor1_vel_dps = motorTurnsPerSecToActuatorDegPerSec(1, motorVel[1]);
+  sample.target0_deg = targetActuatorPos[0] * 360.0f;
+  sample.target1_deg = targetActuatorPos[1] * 360.0f;
+  lastJumpLogMs = now;
+}
+void endJumpAngleLog() {
+  if (!jumpLogActive) {
+    return;
+  }
+
+  jumpLogActive = false;
+
+  Serial.print("#ANGLE_BEGIN ");
+  Serial.print(jumpLogRep);
+  Serial.print(" ");
+  Serial.println(jumpLogCount);
+
+  for (uint16_t i = 0; i < jumpLogCount; i++) {
+    const JumpAngleSample &sample = jumpLog[i];
+    Serial.print("#ANGLE ");
+    Serial.print(sample.rep);
+    Serial.print(" ");
+    Serial.print(sample.t_ms);
+    Serial.print(" ");
+    Serial.print(sample.motor0_deg, 4);
+    Serial.print(" ");
+    Serial.print(sample.motor1_deg, 4);
+    Serial.print(" ");
+    Serial.print(sample.motor0_vel_dps, 4);
+    Serial.print(" ");
+    Serial.print(sample.motor1_vel_dps, 4);
+    Serial.print(" ");
+    Serial.print(sample.target0_deg, 4);
+    Serial.print(" ");
+    Serial.println(sample.target1_deg, 4);
+  }
+
+  if (jumpLogOverflowed) {
+    Serial.print("#ANGLE_OVERFLOW ");
+    Serial.print(jumpLogRep);
+    Serial.print(" ");
+    Serial.println(jumpLogCount);
+  }
+
+  Serial.print("#ANGLE_END ");
+  Serial.println(jumpLogRep);
+}
 // get torque current
 void getIq() {
   Get_Iq_msg_t data;
@@ -352,9 +437,13 @@ void moveEndEffectorInterpolate(float x, float y, int type, float time) {
     targetActuatorPos[1] = thetaB;
     odrvA.setPosition(targetActuatorPos[0] * reduction[0]);
     odrvB.setPosition(targetActuatorPos[1] * reduction[1]);
+    getEncoderValues();
+    sampleJumpAngleLog();
     distanceTick(); // Check distance sensor during movement
     delay(2);
   }
+  getEncoderValues();
+  sampleJumpAngleLog();
 }
 // type p or P into the serial monitor to continue
 void pressPlay() {
@@ -618,13 +707,17 @@ void jump(int num) {
   }
   pressPlay(); // wait for 'p'
   for (int i = 0; i < num; i++) {
+    beginJumpAngleLog(i + 1);
     moveEndEffectorInterpolate(0, 115, 4, 100); // compress: 100→115mm (softer)
     // Non-blocking delay: call distanceTick() repeatedly
     uint32_t compress_start = millis();
     while (millis() - compress_start < 60) {
+      getEncoderValues();
+      sampleJumpAngleLog();
       distanceTick();
     }
     moveEndEffectorInterpolate(0, 160, 4, 100); // extend to top
+    endJumpAngleLog();
   }
 }
 // jump speed sweep with phase markers for Python data collection
@@ -658,6 +751,7 @@ void jumpFrequency() {
       Serial.print(j);
       Serial.print(" ");
       Serial.println(speed_mps, 2);
+      beginJumpAngleLog(j);
       moveEndEffectorInterpolate(0, 115, 4, 100); // Compress speed is tested constantly
 
       // ── Hold phase ───────────────────────────────────────
@@ -668,6 +762,8 @@ void jumpFrequency() {
       // Non-blocking delay: call distanceTick() repeatedly
       uint32_t hold_start = millis();
       while (millis() - hold_start < constant_delay) {
+        getEncoderValues();
+        sampleJumpAngleLog();
         distanceTick();
       }
 
@@ -684,6 +780,7 @@ void jumpFrequency() {
       Serial.print(j);
       Serial.print(" ");
       Serial.println(speed_mps, 2);
+      endJumpAngleLog();
 
       // Wait 2 seconds (2000ms) between jumps (non-blocking)
       uint32_t wait_start = millis();

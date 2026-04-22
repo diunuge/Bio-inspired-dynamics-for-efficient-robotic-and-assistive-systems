@@ -8,7 +8,9 @@ sweep driven by Teensy serial phase markers.
 
 
 Output: Data/jump_speed_X.XXmps.csv
-CSV columns: time_s, speed_mps, rep, phase, Fx, Fy, Fz, Mx, My, Mz, distance_cm
+CSV columns: time_s, speed_mps, rep, phase, Fx, Fy, Fz, Mx, My, Mz,
+distance_cm, motor0_deg, motor1_deg, motor0_vel_dps, motor1_vel_dps,
+target0_deg, target1_deg
 """
 import csv
 import struct
@@ -37,7 +39,10 @@ SWEEP_TIMEOUT_S      = 300.0  # 5-minute hard cap for the whole sweep
 
 # ── CSV field order ────────────────────────────────────────────────────────────
 CSV_FIELDS = ["time_s", "speed_mps", "rep", "phase",
-              "Fx", "Fy", "Fz", "Mx", "My", "Mz", "distance_cm"]
+              "Fx", "Fy", "Fz", "Mx", "My", "Mz", "distance_cm",
+              "motor0_deg", "motor1_deg",
+              "motor0_vel_dps", "motor1_vel_dps",
+              "target0_deg", "target1_deg"]
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Leptrino Client
@@ -197,46 +202,108 @@ def _assign_phase(sample_ts: float, events: list) -> tuple:
     return phase, rep
 
 
-def save_speed_csv(speed_mps: float, phase_events: list, samples: list, distance_readings: list) -> int:
+def save_speed_csv(speed_mps: float, phase_events: list, samples: list,
+                   distance_readings: list, angle_readings: list) -> int:
     """
-    Assign phase labels to every Leptrino sample and write Data/jump_speed_X.XXmps.csv.
+    Assign phase labels to every sample and write Data/jump_speed_X.XXmps.csv.
     Returns number of rows written.
     """
-    if not samples:
-        print(f"  [WARN] speed={speed_mps:.2f} m/s — no force samples collected")
+    if not samples and not angle_readings:
+        print(f"  [WARN] speed={speed_mps:.2f} m/s — no force or angle samples collected")
         return 0
 
     path = DATA_DIR / f"jump_speed_{speed_mps:.2f}mps.csv"
-
-    # reference time = first sample's perf_counter
-    t0 = samples[0][0]
 
     # sort events (should already be sorted, but be safe)
     events_sorted = sorted(phase_events, key=lambda e: e[0])
 
     rows = []
-    for sample in samples:
-        ts, Fx, Fy, Fz, Mx, My, Mz = sample
-        phase, rep = _assign_phase(ts, events_sorted)
-        # Find latest distance before ts
-        dist = None
-        for t, d in reversed(distance_readings):
-            if t <= ts:
-                dist = d
-                break
-        rows.append({
-            "time_s":   round(ts - t0, 6),
-            "speed_mps": speed_mps,
-            "rep":      rep,
-            "phase":    phase,
-            "Fx": round(Fx, 4),
-            "Fy": round(Fy, 4),
-            "Fz": round(Fz, 4),
-            "Mx": round(Mx, 4),
-            "My": round(My, 4),
-            "Mz": round(Mz, 4),
-            "distance_cm": dist,
-        })
+    if samples:
+        # reference time = first force sample's perf_counter
+        t0 = samples[0][0]
+
+        for sample in samples:
+            ts, Fx, Fy, Fz, Mx, My, Mz = sample
+            phase, rep = _assign_phase(ts, events_sorted)
+
+            dist = None
+            for t, d in reversed(distance_readings):
+                if t <= ts:
+                    dist = d
+                    break
+
+            angle = None
+            for angle_sample in reversed(angle_readings):
+                angle_ts, angle_rep, *angle_vals = angle_sample
+                if angle_ts <= ts and (rep == 0 or angle_rep == rep):
+                    angle = angle_vals
+                    break
+
+            if angle is None:
+                motor0_deg = motor1_deg = None
+                motor0_vel_dps = motor1_vel_dps = None
+                target0_deg = target1_deg = None
+            else:
+                (motor0_deg, motor1_deg,
+                 motor0_vel_dps, motor1_vel_dps,
+                 target0_deg, target1_deg) = angle
+
+            rows.append({
+                "time_s": round(ts - t0, 6),
+                "speed_mps": speed_mps,
+                "rep": rep,
+                "phase": phase,
+                "Fx": round(Fx, 4),
+                "Fy": round(Fy, 4),
+                "Fz": round(Fz, 4),
+                "Mx": round(Mx, 4),
+                "My": round(My, 4),
+                "Mz": round(Mz, 4),
+                "distance_cm": dist,
+                "motor0_deg": motor0_deg,
+                "motor1_deg": motor1_deg,
+                "motor0_vel_dps": motor0_vel_dps,
+                "motor1_vel_dps": motor1_vel_dps,
+                "target0_deg": target0_deg,
+                "target1_deg": target1_deg,
+            })
+    else:
+        print(f"  [INFO] speed={speed_mps:.2f} m/s — saving angle-only CSV (no force samples)")
+        t0 = angle_readings[0][0]
+
+        for angle_sample in angle_readings:
+            (ts, rep, motor0_deg, motor1_deg,
+             motor0_vel_dps, motor1_vel_dps,
+             target0_deg, target1_deg) = angle_sample
+            phase, phase_rep = _assign_phase(ts, events_sorted)
+            if phase_rep == 0:
+                phase_rep = rep
+
+            dist = None
+            for t, d in reversed(distance_readings):
+                if t <= ts:
+                    dist = d
+                    break
+
+            rows.append({
+                "time_s": round(ts - t0, 6),
+                "speed_mps": speed_mps,
+                "rep": phase_rep,
+                "phase": phase,
+                "Fx": None,
+                "Fy": None,
+                "Fz": None,
+                "Mx": None,
+                "My": None,
+                "Mz": None,
+                "distance_cm": dist,
+                "motor0_deg": motor0_deg,
+                "motor1_deg": motor1_deg,
+                "motor0_vel_dps": motor0_vel_dps,
+                "motor1_vel_dps": motor1_vel_dps,
+                "target0_deg": target0_deg,
+                "target1_deg": target1_deg,
+            })
 
     with open(path, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=CSV_FIELDS)
@@ -261,6 +328,9 @@ def run_sweep(teensy_ser: serial.Serial, leptrino) -> list:
     current_delay  = None
     phase_events   = []        # [(perf_time, phase_str, rep), ...]
     completed      = []
+    distance_readings = []
+    angle_readings = []
+    rep_start_times = {}
 
     deadline = time.perf_counter() + SWEEP_TIMEOUT_S
 
@@ -290,6 +360,8 @@ def run_sweep(teensy_ser: serial.Serial, leptrino) -> list:
                 current_delay = speed_mps
                 phase_events  = [(recv_t, "start", 0)]
                 distance_readings = []  # [(timestamp, distance_cm), ...]
+                angle_readings = []     # [(timestamp, rep, m0_deg...target1_deg), ...]
+                rep_start_times = {}
                 if leptrino:
                     leptrino.drain_samples()   # discard inter-level samples
                 print(f"\n  [LEVEL] Speed = {speed_mps:.2f} m/s  ▶ collecting ...")
@@ -298,6 +370,7 @@ def run_sweep(teensy_ser: serial.Serial, leptrino) -> list:
             elif line.startswith("#DOWN"):
                 parts = line.split()
                 rep   = int(parts[1])
+                rep_start_times[rep] = recv_t
                 # delay_ms = int(parts[2])  # redundant — trusts current_delay
                 phase_events.append((recv_t, "compress", rep))
 
@@ -316,6 +389,27 @@ def run_sweep(teensy_ser: serial.Serial, leptrino) -> list:
                 rep = int(line.split()[1])
                 phase_events.append((recv_t, "idle", rep))
 
+            elif line.startswith("#ANGLE "):
+                parts = line.split()
+                rep = int(parts[1])
+                t_ms = float(parts[2])
+                base_t = rep_start_times.get(rep)
+                sample_ts = recv_t if base_t is None else base_t + (t_ms / 1000.0)
+                angle_readings.append((
+                    sample_ts,
+                    rep,
+                    float(parts[3]),
+                    float(parts[4]),
+                    float(parts[5]),
+                    float(parts[6]),
+                    float(parts[7]),
+                    float(parts[8]),
+                ))
+
+            elif line.startswith("#ANGLE_OVERFLOW"):
+                parts = line.split()
+                print(f"  [WARN] Angle log overflow on rep {parts[1]} after {parts[2]} samples")
+
             # ── #DONE speed_mps ────────────────────────────────────────────
             elif line.startswith("#DONE"):
                 speed_mps = float(line.split()[1])
@@ -323,7 +417,8 @@ def run_sweep(teensy_ser: serial.Serial, leptrino) -> list:
                     print(f"  [WARN] #DONE mismatch (expected {current_delay}, got {speed_mps})")
 
                 samples = leptrino.drain_samples() if leptrino else []
-                n = save_speed_csv(speed_mps, phase_events, samples, distance_readings)
+                n = save_speed_csv(speed_mps, phase_events, samples,
+                                   distance_readings, angle_readings)
                 completed.append(speed_mps)
                 print(f"  [SAVED] speed={speed_mps:.2f}m/s → {n} samples  "
                       f"({len(completed)}/10 levels done)")
@@ -331,6 +426,8 @@ def run_sweep(teensy_ser: serial.Serial, leptrino) -> list:
                 current_delay = None
                 phase_events  = []
                 distance_readings = []
+                angle_readings = []
+                rep_start_times = {}
 
             # ── #SWEEP_COMPLETE ───────────────────────────────────────────
             elif line.strip() == "#SWEEP_COMPLETE":

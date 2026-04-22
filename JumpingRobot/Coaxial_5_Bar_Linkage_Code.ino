@@ -94,6 +94,29 @@ uint32_t lastDistMs = 0;
 int dist_adc = 0;
 float dist_cm = 0.0f;
 
+// Jump-angle logging buffered in RAM to avoid serial overhead during the motion.
+struct JumpAngleSample {
+  uint32_t t_ms;
+  int rep;
+  float motor0_deg;
+  float motor1_deg;
+  float motor0_vel_dps;
+  float motor1_vel_dps;
+  float target0_deg;
+  float target1_deg;
+};
+
+const uint16_t JUMP_LOG_CAPACITY = 160;
+const uint32_t JUMP_LOG_INTERVAL_MS = 5;
+
+JumpAngleSample jumpLog[JUMP_LOG_CAPACITY];
+uint16_t jumpLogCount = 0;
+uint32_t jumpLogStartMs = 0;
+uint32_t lastJumpLogMs = 0;
+int jumpLogRep = 0;
+bool jumpLogActive = false;
+bool jumpLogOverflowed = false;
+
 void setup() {
   Serial.begin(115200);
 
