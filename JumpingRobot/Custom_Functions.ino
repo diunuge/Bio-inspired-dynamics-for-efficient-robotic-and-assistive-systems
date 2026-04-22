@@ -1,5 +1,14 @@
 // set the state of the odrives (state == 0, IDLE) (state == 1, CLOSED LOOP
 // CONTROL)
+
+// Distance sensor variables
+extern const int sensorPin;
+extern const uint32_t DIST_INTERVAL_MS;
+
+extern uint32_t lastDistMs;
+extern int dist_adc;
+extern float dist_cm;
+
 void setState(int nodeID, int state) {
   int actualState;
   do {
@@ -343,6 +352,7 @@ void moveEndEffectorInterpolate(float x, float y, int type, float time) {
     targetActuatorPos[1] = thetaB;
     odrvA.setPosition(targetActuatorPos[0] * reduction[0]);
     odrvB.setPosition(targetActuatorPos[1] * reduction[1]);
+    distanceTick(); // Check distance sensor during movement
     delay(2);
   }
 }
@@ -609,7 +619,11 @@ void jump(int num) {
   pressPlay(); // wait for 'p'
   for (int i = 0; i < num; i++) {
     moveEndEffectorInterpolate(0, 115, 4, 100); // compress: 100→115mm (softer)
-    delay(60);
+    // Non-blocking delay: call distanceTick() repeatedly
+    uint32_t compress_start = millis();
+    while (millis() - compress_start < 60) {
+      distanceTick();
+    }
     moveEndEffectorInterpolate(0, 160, 4, 100); // extend to top
   }
 }
@@ -619,21 +633,20 @@ void jump(int num) {
 void jumpFrequency() {
   for (int i = 0; i < 2; i++) {
     setTrapTraj(i, 60, 600, 600,
-                0); // Хурд, хурдатгалыг нэмэгдүүлсэн (жишээ нь 60, 600)
+                0); // Increased speed and acceleration (e.g., 60, 600)
   }
 
   int constant_delay =
-      50; // Тогтмол хүлээх хугацаа 50ms (та өөрийнхөөрөө сольж болно)
+      50; // Constant delay time 50ms (you can change it)
 
-  // 10 удаа хурдыг 20%-иар нэмэгдүүлж гүйлгэх
+  // Run 10 times, increasing speed by 20% each time
   for (int step = 0; step < 10; step++) {
     float speed_factor = 1.0 + (0.2 * step); // 1.0, 1.2, 1.4 ... 2.8
     int push_time =
         (int)(100.0 /
-              speed_factor); // Түлхэх хугацааг (ms) хурдны пропорцоор багасгана
+              speed_factor); // Decrease push time (ms) proportionally to speed
     float speed_mps =
-        0.045 / (push_time / 1000.0); // Хурд (m/s). (160mm-ээс 115mm хүртэлх
-                                      // шилжилт 45mm буюу 0.045m)
+        0.045 / (push_time / 1000.0); // Speed (m/s). Displacement from 160mm to 115mm is 45mm or 0.045m
 
     // ── Speed level start marker ──────────────────────────────────────
     Serial.print("#START ");
@@ -645,18 +658,21 @@ void jumpFrequency() {
       Serial.print(j);
       Serial.print(" ");
       Serial.println(speed_mps, 2);
-      moveEndEffectorInterpolate(0, 115, 4,
-                                 100); // Буух хурд тогтмол туршигдана
+      moveEndEffectorInterpolate(0, 115, 4, 100); // Compress speed is tested constantly
 
       // ── Hold phase ───────────────────────────────────────
       Serial.print("#HOLD ");
       Serial.print(j);
       Serial.print(" ");
       Serial.println(speed_mps, 2);
-      delay(constant_delay); // Хүлээх хугацаа 50ms-р тогтмол байна
+      // Non-blocking delay: call distanceTick() repeatedly
+      uint32_t hold_start = millis();
+      while (millis() - hold_start < constant_delay) {
+        distanceTick();
+      }
 
-      // ── Extend phase (түлхэх үе) ─────────────────────────
-      // ЭНД ХУРД ӨӨРЧЛӨГДӨНӨ (push_time)
+      // ── Extend phase (push phase) ─────────────────────────
+      // SPEED CHANGES HERE (push_time)
       Serial.print("#UP ");
       Serial.print(j);
       Serial.print(" ");
@@ -669,8 +685,11 @@ void jumpFrequency() {
       Serial.print(" ");
       Serial.println(speed_mps, 2);
 
-      // Үсрэлт хооронд 2 секунд (2000ms) хүлээх
-      delay(2000);
+      // Wait 2 seconds (2000ms) between jumps (non-blocking)
+      uint32_t wait_start = millis();
+      while (millis() - wait_start < 2000) {
+        distanceTick();
+      }
     }
 
     // ── Speed level done marker ───────────────────────────────────────
@@ -684,5 +703,20 @@ void upDown(int num) {
   for (int i = 0; i < num; i++) {
     moveEndEffectorInterpolate(0, 80, 4, 1000);
     moveEndEffectorInterpolate(0, 180, 4, 1000);
+  }
+}
+
+// read the distance sensor value every DIST_INTERVAL_MS milliseconds and print to serial
+void distanceTick() {
+  uint32_t now = millis();
+
+  if (now - lastDistMs >= DIST_INTERVAL_MS) {
+    lastDistMs = now;
+
+    dist_adc = analogRead(sensorPin);
+    dist_cm = 10826.7f / (dist_adc + 69.3f) - 3.89f;
+
+    Serial.print("Distance (cm): ");
+    Serial.println(dist_cm);
   }
 }

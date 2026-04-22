@@ -85,6 +85,15 @@ float homePos =
     40.509389228 /
     360.0; // middle position of the actuator (found in CAD) [counts]
 static const int NUM_REPEATS = 1;
+
+// distance sensor variables
+const int sensorPin = A4;
+const uint32_t DIST_INTERVAL_MS = 40;
+
+uint32_t lastDistMs = 0;
+int dist_adc = 0;
+float dist_cm = 0.0f;
+
 void setup() {
   Serial.begin(115200);
 

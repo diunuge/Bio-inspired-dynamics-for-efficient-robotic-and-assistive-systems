@@ -8,7 +8,7 @@ sweep driven by Teensy serial phase markers.
 
 
 Output: Data/jump_speed_X.XXmps.csv
-CSV columns: time_s, speed_mps, rep, phase, Fx, Fy, Fz, Mx, My, Mz
+CSV columns: time_s, speed_mps, rep, phase, Fx, Fy, Fz, Mx, My, Mz, distance_cm
 """
 import csv
 import struct
@@ -23,6 +23,7 @@ import serial
 TEENSY_PORT = "COM11"
 TEENSY_BAUD = 115200
 
+# Force Sensor
 LEP_PORT = "COM5"
 LEP_BAUD = 9600
 LEP_HZ   = 100          # Leptrino hardware rate (100 Hz = 10 ms/sample)
@@ -36,7 +37,7 @@ SWEEP_TIMEOUT_S      = 300.0  # 5-minute hard cap for the whole sweep
 
 # ── CSV field order ────────────────────────────────────────────────────────────
 CSV_FIELDS = ["time_s", "speed_mps", "rep", "phase",
-              "Fx", "Fy", "Fz", "Mx", "My", "Mz"]
+              "Fx", "Fy", "Fz", "Mx", "My", "Mz", "distance_cm"]
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Leptrino Client
@@ -196,7 +197,7 @@ def _assign_phase(sample_ts: float, events: list) -> tuple:
     return phase, rep
 
 
-def save_speed_csv(speed_mps: float, phase_events: list, samples: list) -> int:
+def save_speed_csv(speed_mps: float, phase_events: list, samples: list, distance_readings: list) -> int:
     """
     Assign phase labels to every Leptrino sample and write Data/jump_speed_X.XXmps.csv.
     Returns number of rows written.
@@ -217,6 +218,12 @@ def save_speed_csv(speed_mps: float, phase_events: list, samples: list) -> int:
     for sample in samples:
         ts, Fx, Fy, Fz, Mx, My, Mz = sample
         phase, rep = _assign_phase(ts, events_sorted)
+        # Find latest distance before ts
+        dist = None
+        for t, d in reversed(distance_readings):
+            if t <= ts:
+                dist = d
+                break
         rows.append({
             "time_s":   round(ts - t0, 6),
             "speed_mps": speed_mps,
@@ -228,6 +235,7 @@ def save_speed_csv(speed_mps: float, phase_events: list, samples: list) -> int:
             "Mx": round(Mx, 4),
             "My": round(My, 4),
             "Mz": round(Mz, 4),
+            "distance_cm": dist,
         })
 
     with open(path, "w", newline="", encoding="utf-8") as f:
@@ -267,12 +275,21 @@ def run_sweep(teensy_ser: serial.Serial, leptrino) -> list:
         recv_t = time.perf_counter()
         print(f"  [T] {line}")
 
+        # Parse distance readings
+        if line.startswith("Distance (cm): "):
+            try:
+                dist_cm = float(line.split(": ")[1])
+                distance_readings.append((recv_t, dist_cm))
+            except (ValueError, IndexError):
+                pass
+
         try:
             # ── #START speed_mps ──────────────────────────────────────────
             if line.startswith("#START"):
                 speed_mps     = float(line.split()[1])
                 current_delay = speed_mps
                 phase_events  = [(recv_t, "start", 0)]
+                distance_readings = []  # [(timestamp, distance_cm), ...]
                 if leptrino:
                     leptrino.drain_samples()   # discard inter-level samples
                 print(f"\n  [LEVEL] Speed = {speed_mps:.2f} m/s  ▶ collecting ...")
@@ -306,13 +323,14 @@ def run_sweep(teensy_ser: serial.Serial, leptrino) -> list:
                     print(f"  [WARN] #DONE mismatch (expected {current_delay}, got {speed_mps})")
 
                 samples = leptrino.drain_samples() if leptrino else []
-                n = save_speed_csv(speed_mps, phase_events, samples)
+                n = save_speed_csv(speed_mps, phase_events, samples, distance_readings)
                 completed.append(speed_mps)
                 print(f"  [SAVED] speed={speed_mps:.2f}m/s → {n} samples  "
                       f"({len(completed)}/10 levels done)")
 
                 current_delay = None
                 phase_events  = []
+                distance_readings = []
 
             # ── #SWEEP_COMPLETE ───────────────────────────────────────────
             elif line.strip() == "#SWEEP_COMPLETE":
