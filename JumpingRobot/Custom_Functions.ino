@@ -125,10 +125,14 @@ float motorTurnsPerSecToActuatorDegPerSec(int nodeID, float motorTurnsPerSec) {
                                          reduction[nodeID];
 }
 void beginJumpAngleLog(int rep) {
+  if (jumpLogPendingFlush) {
+    endJumpAngleLog();
+  }
   jumpLogActive = true;
   jumpLogRep = rep;
   jumpLogCount = 0;
   jumpLogOverflowed = false;
+  jumpLogPendingFlush = false;
   jumpLogStartMs = millis();
   lastJumpLogMs = 0;
 }
@@ -158,12 +162,20 @@ void sampleJumpAngleLog() {
   sample.target1_deg = targetActuatorPos[1] * 360.0f;
   lastJumpLogMs = now;
 }
-void endJumpAngleLog() {
+void stopJumpAngleLog() {
   if (!jumpLogActive) {
     return;
   }
 
   jumpLogActive = false;
+  jumpLogPendingFlush = jumpLogCount > 0;
+}
+void flushJumpAngleLog() {
+  if (!jumpLogPendingFlush) {
+    return;
+  }
+
+  jumpLogPendingFlush = false;
 
   Serial.print("#ANGLE_BEGIN ");
   Serial.print(jumpLogRep);
@@ -199,6 +211,10 @@ void endJumpAngleLog() {
 
   Serial.print("#ANGLE_END ");
   Serial.println(jumpLogRep);
+}
+void endJumpAngleLog() {
+  stopJumpAngleLog();
+  flushJumpAngleLog();
 }
 // get torque current
 void getIq() {
@@ -438,12 +454,13 @@ void moveEndEffectorInterpolate(float x, float y, int type, float time) {
     odrvA.setPosition(targetActuatorPos[0] * reduction[0]);
     odrvB.setPosition(targetActuatorPos[1] * reduction[1]);
     getEncoderValues();
-    sampleJumpAngleLog();
+    encoderTick();
+    //sampleJumpAngleLog();
     distanceTick(); // Check distance sensor during movement
     delay(2);
   }
-  getEncoderValues();
-  sampleJumpAngleLog();
+  //getEncoderValues();
+  //sampleJumpAngleLog();
 }
 // type p or P into the serial monitor to continue
 void pressPlay() {
@@ -763,7 +780,8 @@ void jumpFrequency() {
       uint32_t hold_start = millis();
       while (millis() - hold_start < constant_delay) {
         getEncoderValues();
-        sampleJumpAngleLog();
+        //sampleJumpAngleLog();
+        encoderTick();
         distanceTick();
       }
 
@@ -780,13 +798,18 @@ void jumpFrequency() {
       Serial.print(j);
       Serial.print(" ");
       Serial.println(speed_mps, 2);
-      endJumpAngleLog();
+      stopJumpAngleLog();
 
       // Wait 2 seconds (2000ms) between jumps (non-blocking)
       uint32_t wait_start = millis();
       while (millis() - wait_start < 2000) {
+        getEncoderValues();
+        //sampleJumpAngleLog();
+        encoderTick();
         distanceTick();
       }
+
+      //flushJumpAngleLog();
     }
 
     // ── Speed level done marker ───────────────────────────────────────
@@ -816,4 +839,37 @@ void distanceTick() {
     Serial.print("Distance (cm): ");
     Serial.println(dist_cm);
   }
+}
+
+// read the motor feedback and 
+// Serial output sample
+// "#ANGLE 2 0 39.6707 41.4411 0.9328 -0.1313 39.6092 41.4096"
+void encoderTick() {
+  if (!jumpLogActive) {
+    return;
+  }
+
+  uint32_t now = millis();
+  if (lastJumpLogMs != 0 && now - lastJumpLogMs < JUMP_LOG_INTERVAL_MS) {
+    return;
+  }
+
+  Serial.print("#ANGLE ");
+  Serial.print(jumpLogRep);
+  Serial.print(" ");
+  Serial.print(now - jumpLogStartMs);
+  Serial.print(" ");
+  Serial.print(motorTurnsToActuatorDeg(0, motorPos[0]), 4);
+  Serial.print(" ");
+  Serial.print(motorTurnsToActuatorDeg(1, motorPos[1]), 4);
+  Serial.print(" ");
+  Serial.print(motorTurnsPerSecToActuatorDegPerSec(0, motorVel[0]), 4);
+  Serial.print(" ");
+  Serial.print(motorTurnsPerSecToActuatorDegPerSec(1, motorVel[1]), 4);
+  Serial.print(" ");
+  Serial.print(targetActuatorPos[0] * 360.0f, 4);
+  Serial.print(" ");
+  Serial.println(targetActuatorPos[1] * 360.0f, 4);
+
+  lastJumpLogMs = now;
 }

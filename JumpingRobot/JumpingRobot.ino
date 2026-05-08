@@ -116,6 +116,7 @@ uint32_t lastJumpLogMs = 0;
 int jumpLogRep = 0;
 bool jumpLogActive = false;
 bool jumpLogOverflowed = false;
+bool jumpLogPendingFlush = false;
 
 void setup() {
   Serial.begin(115200);
